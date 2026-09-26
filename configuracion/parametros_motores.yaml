@@ -1,9 +1,8 @@
-# Criterios internos de análisis
-# Porcentaje respecto a corriente nominal de placa
-
+# Criterios internos de carga
 carga_baja_pct: 30
 carga_alta_pct: 90
 sobrecarga_pct: 100
 
-# Conversión
-hp_a_kw: 0.746
+# Criterios internos iniciales de desbalance
+desbalance_corriente_alerta_pct: 5
+desbalance_voltaje_alerta_pct: 1
