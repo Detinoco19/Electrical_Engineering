@@ -10,17 +10,22 @@ from openpyxl.styles import (
     Border,
     Side,
 )
+from openpyxl.utils import get_column_letter
 
 from scripts.motores import (
     hp_a_kw,
     corriente_motor_trifasico,
+    promedio_trifasico,
+    desbalance_porcentual,
+    fase_mayor,
+    fase_menor,
 )
 
 from scripts.configuracion import cargar_parametros
 
 
 # ============================================================
-# RUTAS DEL PROYECTO
+# RUTAS
 # ============================================================
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -39,22 +44,27 @@ ARCHIVO_SALIDA = (
 
 
 # ============================================================
-# CARGAR CONFIGURACIÓN
+# CONFIGURACIÓN
 # ============================================================
 
 PARAMETROS = cargar_parametros()
 
 
+# ============================================================
+# VALIDAR PARÁMETROS
+# ============================================================
+
 def validar_parametros():
     """
-    Verificar que el archivo YAML contenga los parámetros
-    requeridos para evaluar los motores.
+    Verificar los parámetros definidos en el archivo YAML.
     """
 
     requeridos = {
         "carga_baja_pct",
         "carga_alta_pct",
         "sobrecarga_pct",
+        "desbalance_corriente_alerta_pct",
+        "desbalance_voltaje_alerta_pct",
     }
 
     faltantes = (
@@ -68,9 +78,25 @@ def validar_parametros():
             f"{sorted(faltantes)}"
         )
 
-    carga_baja = PARAMETROS["carga_baja_pct"]
-    carga_alta = PARAMETROS["carga_alta_pct"]
-    sobrecarga = PARAMETROS["sobrecarga_pct"]
+    carga_baja = PARAMETROS[
+        "carga_baja_pct"
+    ]
+
+    carga_alta = PARAMETROS[
+        "carga_alta_pct"
+    ]
+
+    sobrecarga = PARAMETROS[
+        "sobrecarga_pct"
+    ]
+
+    desbalance_i = PARAMETROS[
+        "desbalance_corriente_alerta_pct"
+    ]
+
+    desbalance_v = PARAMETROS[
+        "desbalance_voltaje_alerta_pct"
+    ]
 
     if carga_baja < 0:
         raise ValueError(
@@ -89,57 +115,26 @@ def validar_parametros():
             "que carga_alta_pct."
         )
 
+    if desbalance_i <= 0:
+        raise ValueError(
+            "desbalance_corriente_alerta_pct "
+            "debe ser mayor que cero."
+        )
 
-# ============================================================
-# EVALUACIÓN DEL MOTOR
-# ============================================================
-
-def evaluar_motor(fila):
-    """
-    Evaluar el motor usando la corriente medida respecto
-    a la corriente nominal de placa.
-
-    Los límites se leen desde:
-    configuracion/parametros_motores.yaml
-
-    CARGA_CORRIENTE_PCT es un indicador eléctrico basado
-    en corriente y no representa directamente la carga
-    mecánica real del motor.
-    """
-
-    carga = fila["CARGA_CORRIENTE_PCT"]
-
-    carga_baja = PARAMETROS[
-        "carga_baja_pct"
-    ]
-
-    carga_alta = PARAMETROS[
-        "carga_alta_pct"
-    ]
-
-    sobrecarga = PARAMETROS[
-        "sobrecarga_pct"
-    ]
-
-    if carga > sobrecarga:
-        return "REVISAR SOBRECARGA"
-
-    if carga > carga_alta:
-        return "CARGA ALTA"
-
-    if carga < carga_baja:
-        return "CARGA BAJA"
-
-    return "NORMAL"
+    if desbalance_v <= 0:
+        raise ValueError(
+            "desbalance_voltaje_alerta_pct "
+            "debe ser mayor que cero."
+        )
 
 
 # ============================================================
-# VALIDACIÓN DE DATOS DE ENTRADA
+# VALIDAR DATOS DE ENTRADA
 # ============================================================
 
 def validar_datos(df):
     """
-    Verificar estructura y valores básicos de motores.xlsx.
+    Verificar estructura y valores del archivo motores.xlsx.
     """
 
     columnas_requeridas = {
@@ -150,7 +145,12 @@ def validar_datos(df):
         "FP",
         "EFICIENCIA",
         "CORRIENTE_PLACA_A",
-        "CORRIENTE_MEDIDA_A",
+        "CORRIENTE_L1_A",
+        "CORRIENTE_L2_A",
+        "CORRIENTE_L3_A",
+        "VOLTAJE_L1_L2_V",
+        "VOLTAJE_L2_L3_V",
+        "VOLTAJE_L3_L1_V",
         "ESTADO",
     }
 
@@ -165,18 +165,46 @@ def validar_datos(df):
             f"{sorted(faltantes)}"
         )
 
+    # --------------------------------------------------------
+    # TAG
+    # --------------------------------------------------------
+
+    if df["TAG"].isnull().any():
+        raise ValueError(
+            "Existen TAG vacíos."
+        )
+
+    if df["TAG"].duplicated().any():
+        duplicados = (
+            df.loc[
+                df["TAG"].duplicated(),
+                "TAG",
+            ]
+            .tolist()
+        )
+
+        raise ValueError(
+            "Existen TAG duplicados: "
+            f"{duplicados}"
+        )
+
+    # --------------------------------------------------------
+    # Columnas numéricas
+    # --------------------------------------------------------
+
     columnas_numericas = [
         "HP",
         "VOLTAJE",
         "FP",
         "EFICIENCIA",
         "CORRIENTE_PLACA_A",
-        "CORRIENTE_MEDIDA_A",
+        "CORRIENTE_L1_A",
+        "CORRIENTE_L2_A",
+        "CORRIENTE_L3_A",
+        "VOLTAJE_L1_L2_V",
+        "VOLTAJE_L2_L3_V",
+        "VOLTAJE_L3_L1_V",
     ]
-
-    # --------------------------------------------------------
-    # Valores vacíos
-    # --------------------------------------------------------
 
     for columna in columnas_numericas:
 
@@ -184,12 +212,6 @@ def validar_datos(df):
             raise ValueError(
                 f"Existen valores vacíos en {columna}"
             )
-
-    # --------------------------------------------------------
-    # Verificar tipo numérico
-    # --------------------------------------------------------
-
-    for columna in columnas_numericas:
 
         if not pd.api.types.is_numeric_dtype(
             df[columna]
@@ -199,7 +221,7 @@ def validar_datos(df):
             )
 
     # --------------------------------------------------------
-    # Validaciones técnicas
+    # Validaciones básicas
     # --------------------------------------------------------
 
     if (df["HP"] <= 0).any():
@@ -235,30 +257,172 @@ def validar_datos(df):
             "CORRIENTE_PLACA_A debe ser mayor que cero."
         )
 
-    if (
-        df["CORRIENTE_MEDIDA_A"] < 0
-    ).any():
-        raise ValueError(
-            "CORRIENTE_MEDIDA_A no puede ser negativa."
-        )
+    columnas_corriente = [
+        "CORRIENTE_L1_A",
+        "CORRIENTE_L2_A",
+        "CORRIENTE_L3_A",
+    ]
+
+    for columna in columnas_corriente:
+
+        if (df[columna] <= 0).any():
+            raise ValueError(
+                f"{columna} debe ser mayor que cero."
+            )
+
+    columnas_voltaje = [
+        "VOLTAJE_L1_L2_V",
+        "VOLTAJE_L2_L3_V",
+        "VOLTAJE_L3_L1_V",
+    ]
+
+    for columna in columnas_voltaje:
+
+        if (df[columna] <= 0).any():
+            raise ValueError(
+                f"{columna} debe ser mayor que cero."
+            )
 
 
 # ============================================================
-# FORMATO DEL REPORTE EXCEL
+# EVALUACIÓN DE CARGA
+# ============================================================
+
+def evaluar_carga(carga_pct):
+    """
+    Evaluar corriente promedio respecto a corriente de placa.
+    """
+
+    carga_baja = PARAMETROS[
+        "carga_baja_pct"
+    ]
+
+    carga_alta = PARAMETROS[
+        "carga_alta_pct"
+    ]
+
+    sobrecarga = PARAMETROS[
+        "sobrecarga_pct"
+    ]
+
+    if carga_pct > sobrecarga:
+        return "REVISAR SOBRECARGA"
+
+    if carga_pct > carga_alta:
+        return "CARGA ALTA"
+
+    if carga_pct < carga_baja:
+        return "CARGA BAJA"
+
+    return "NORMAL"
+
+
+# ============================================================
+# EVALUACIÓN DE DESBALANCE DE CORRIENTE
+# ============================================================
+
+def evaluar_desbalance_corriente(
+    desbalance_pct,
+):
+    """
+    Evaluar desbalance de corriente.
+    """
+
+    limite = PARAMETROS[
+        "desbalance_corriente_alerta_pct"
+    ]
+
+    if desbalance_pct > limite:
+        return "REVISAR DESBALANCE I"
+
+    return "NORMAL"
+
+
+# ============================================================
+# EVALUACIÓN DE DESBALANCE DE VOLTAJE
+# ============================================================
+
+def evaluar_desbalance_voltaje(
+    desbalance_pct,
+):
+    """
+    Evaluar desbalance de voltaje.
+    """
+
+    limite = PARAMETROS[
+        "desbalance_voltaje_alerta_pct"
+    ]
+
+    if desbalance_pct > limite:
+        return "REVISAR DESBALANCE V"
+
+    return "NORMAL"
+
+
+# ============================================================
+# DIAGNÓSTICO GENERAL
+# ============================================================
+
+def generar_diagnostico(fila):
+    """
+    Combinar las diferentes alertas del motor.
+    """
+
+    problemas = []
+
+    if fila["ALERTA_CARGA"] != "NORMAL":
+        problemas.append(
+            fila["ALERTA_CARGA"]
+        )
+
+    if (
+        fila[
+            "ALERTA_DESBALANCE_CORRIENTE"
+        ]
+        != "NORMAL"
+    ):
+        problemas.append(
+            fila[
+                "ALERTA_DESBALANCE_CORRIENTE"
+            ]
+        )
+
+    if (
+        fila[
+            "ALERTA_DESBALANCE_VOLTAJE"
+        ]
+        != "NORMAL"
+    ):
+        problemas.append(
+            fila[
+                "ALERTA_DESBALANCE_VOLTAJE"
+            ]
+        )
+
+    if not problemas:
+        return "NORMAL"
+
+    return " | ".join(
+        problemas
+    )
+
+
+# ============================================================
+# FORMATO EXCEL
 # ============================================================
 
 def formatear_excel():
     """
-    Aplicar formato al archivo motores_calculados.xlsx.
+    Aplicar formato profesional al archivo de resultados.
     """
 
     wb = load_workbook(
         ARCHIVO_SALIDA
     )
 
-    # --------------------------------------------------------
-    # Estilos
-    # --------------------------------------------------------
+    # ========================================================
+    # ESTILOS
+    # ========================================================
 
     relleno_encabezado = PatternFill(
         fill_type="solid",
@@ -270,16 +434,16 @@ def formatear_excel():
         bold=True,
     )
 
-    lado_borde = Side(
+    borde_lado = Side(
         style="thin",
         color="BFBFBF",
     )
 
     borde = Border(
-        left=lado_borde,
-        right=lado_borde,
-        top=lado_borde,
-        bottom=lado_borde,
+        left=borde_lado,
+        right=borde_lado,
+        top=borde_lado,
+        bottom=borde_lado,
     )
 
     relleno_normal = PatternFill(
@@ -287,19 +451,19 @@ def formatear_excel():
         fgColor="C6EFCE",
     )
 
-    relleno_carga_alta = PatternFill(
+    relleno_advertencia = PatternFill(
         fill_type="solid",
         fgColor="FFEB9C",
     )
 
-    relleno_carga_baja = PatternFill(
-        fill_type="solid",
-        fgColor="D9EAF7",
-    )
-
-    relleno_sobrecarga = PatternFill(
+    relleno_revision = PatternFill(
         fill_type="solid",
         fgColor="FFC7CE",
+    )
+
+    relleno_bajo = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAF7",
     )
 
     # ========================================================
@@ -310,11 +474,10 @@ def formatear_excel():
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-
     ws.row_dimensions[1].height = 45
 
     # --------------------------------------------------------
-    # Encabezados
+    # Encabezado
     # --------------------------------------------------------
 
     for celda in ws[1]:
@@ -330,7 +493,7 @@ def formatear_excel():
         )
 
     # --------------------------------------------------------
-    # Celdas
+    # Bordes y alineación
     # --------------------------------------------------------
 
     for fila in ws.iter_rows(
@@ -347,128 +510,237 @@ def formatear_excel():
             )
 
     # --------------------------------------------------------
-    # Ancho de columnas
+    # Mapa de encabezados
     # --------------------------------------------------------
 
-    anchos = {
-        "A": 12,
-        "B": 28,
-        "C": 10,
-        "D": 12,
-        "E": 10,
-        "F": 14,
-        "G": 20,
-        "H": 20,
-        "I": 15,
-        "J": 12,
-        "K": 22,
-        "L": 26,
-        "M": 22,
-        "N": 24,
+    encabezados = {
+        celda.value: celda.column
+        for celda in ws[1]
     }
-
-    for columna, ancho in anchos.items():
-
-        ws.column_dimensions[
-            columna
-        ].width = ancho
 
     # --------------------------------------------------------
     # Formato numérico
     # --------------------------------------------------------
 
-    for fila in range(
-        2,
-        ws.max_row + 1,
-    ):
-
-        ws[f"C{fila}"].number_format = "0.00"
-        ws[f"D{fila}"].number_format = "0.00"
-        ws[f"E{fila}"].number_format = "0.00"
-        ws[f"F{fila}"].number_format = "0.00"
-        ws[f"G{fila}"].number_format = "0.00"
-        ws[f"H{fila}"].number_format = "0.00"
-        ws[f"J{fila}"].number_format = "0.00"
-        ws[f"K{fila}"].number_format = "0.00"
-        ws[f"L{fila}"].number_format = "0.00"
-        ws[f"M{fila}"].number_format = "0.00"
-
-    # --------------------------------------------------------
-    # Centrado
-    # --------------------------------------------------------
-
-    columnas_centradas = [
-        "A",
-        "C",
-        "D",
-        "E",
-        "F",
-        "G",
-        "H",
-        "I",
-        "J",
-        "K",
-        "L",
-        "M",
-        "N",
+    columnas_numericas = [
+        "HP",
+        "VOLTAJE",
+        "FP",
+        "EFICIENCIA",
+        "CORRIENTE_PLACA_A",
+        "CORRIENTE_L1_A",
+        "CORRIENTE_L2_A",
+        "CORRIENTE_L3_A",
+        "VOLTAJE_L1_L2_V",
+        "VOLTAJE_L2_L3_V",
+        "VOLTAJE_L3_L1_V",
+        "KW",
+        "CORRIENTE_CALCULADA_A",
+        "DESVIACION_CALC_PLACA_PCT",
+        "CORRIENTE_PROMEDIO_A",
+        "DESBALANCE_CORRIENTE_PCT",
+        "VOLTAJE_PROMEDIO_V",
+        "DESBALANCE_VOLTAJE_PCT",
+        "CARGA_CORRIENTE_PCT",
     ]
 
-    for columna in columnas_centradas:
+    for encabezado in columnas_numericas:
+
+        if encabezado not in encabezados:
+            continue
+
+        columna = encabezados[
+            encabezado
+        ]
 
         for fila in range(
             2,
             ws.max_row + 1,
         ):
 
-            ws[
-                f"{columna}{fila}"
-            ].alignment = Alignment(
-                horizontal="center",
-                vertical="center",
-            )
+            ws.cell(
+                row=fila,
+                column=columna,
+            ).number_format = "0.00"
 
     # --------------------------------------------------------
-    # Colores según alerta
+    # Ancho automático
     # --------------------------------------------------------
 
-    for fila in range(
-        2,
-        ws.max_row + 1,
+    for columna in range(
+        1,
+        ws.max_column + 1,
     ):
 
-        celda_alerta = ws[
-            f"N{fila}"
+        letra = get_column_letter(
+            columna
+        )
+
+        longitud_maxima = 0
+
+        for fila in range(
+            1,
+            ws.max_row + 1,
+        ):
+
+            valor = ws.cell(
+                row=fila,
+                column=columna,
+            ).value
+
+            if valor is None:
+                continue
+
+            longitud_maxima = max(
+                longitud_maxima,
+                len(str(valor)),
+            )
+
+        ancho = min(
+            max(
+                longitud_maxima + 3,
+                12,
+            ),
+            32,
+        )
+
+        ws.column_dimensions[
+            letra
+        ].width = ancho
+
+    # Descripción
+    if "DESCRIPCION" in encabezados:
+
+        letra = get_column_letter(
+            encabezados["DESCRIPCION"]
+        )
+
+        ws.column_dimensions[
+            letra
+        ].width = 28
+
+    # Diagnóstico
+    if "DIAGNOSTICO_GENERAL" in encabezados:
+
+        letra = get_column_letter(
+            encabezados[
+                "DIAGNOSTICO_GENERAL"
+            ]
+        )
+
+        ws.column_dimensions[
+            letra
+        ].width = 42
+
+    # ========================================================
+    # COLORES DE ALERTAS
+    # ========================================================
+
+    columnas_alertas = [
+        "ALERTA_CARGA",
+        "ALERTA_DESBALANCE_CORRIENTE",
+        "ALERTA_DESBALANCE_VOLTAJE",
+    ]
+
+    for encabezado in columnas_alertas:
+
+        if encabezado not in encabezados:
+            continue
+
+        columna = encabezados[
+            encabezado
         ]
 
-        alerta = celda_alerta.value
+        for fila in range(
+            2,
+            ws.max_row + 1,
+        ):
 
-        if alerta == "NORMAL":
-
-            celda_alerta.fill = (
-                relleno_normal
+            celda = ws.cell(
+                row=fila,
+                column=columna,
             )
 
-        elif alerta == "CARGA ALTA":
+            valor = celda.value
 
-            celda_alerta.fill = (
-                relleno_carga_alta
+            if valor == "NORMAL":
+
+                celda.fill = (
+                    relleno_normal
+                )
+
+            elif valor == "CARGA ALTA":
+
+                celda.fill = (
+                    relleno_advertencia
+                )
+
+            elif valor == "CARGA BAJA":
+
+                celda.fill = (
+                    relleno_bajo
+                )
+
+            else:
+
+                celda.fill = (
+                    relleno_revision
+                )
+
+            celda.font = Font(
+                bold=True
             )
 
-        elif alerta == "CARGA BAJA":
-
-            celda_alerta.fill = (
-                relleno_carga_baja
+            celda.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
             )
 
-        elif alerta == "REVISAR SOBRECARGA":
+    # --------------------------------------------------------
+    # Diagnóstico general
+    # --------------------------------------------------------
 
-            celda_alerta.fill = (
-                relleno_sobrecarga
+    if (
+        "DIAGNOSTICO_GENERAL"
+        in encabezados
+    ):
+
+        columna = encabezados[
+            "DIAGNOSTICO_GENERAL"
+        ]
+
+        for fila in range(
+            2,
+            ws.max_row + 1,
+        ):
+
+            celda = ws.cell(
+                row=fila,
+                column=columna,
             )
 
-        celda_alerta.font = Font(
-            bold=True
-        )
+            if celda.value == "NORMAL":
+
+                celda.fill = (
+                    relleno_normal
+                )
+
+            else:
+
+                celda.fill = (
+                    relleno_revision
+                )
+
+            celda.font = Font(
+                bold=True
+            )
+
+            celda.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
+            )
 
     # ========================================================
     # HOJA RESUMEN
@@ -482,21 +754,17 @@ def formatear_excel():
         ws_resumen.dimensions
     )
 
-    ws_resumen.row_dimensions[
-        1
-    ].height = 30
-
     ws_resumen.column_dimensions[
         "A"
-    ].width = 40
+    ].width = 45
 
     ws_resumen.column_dimensions[
         "B"
-    ].width = 20
+    ].width = 22
 
-    # --------------------------------------------------------
-    # Encabezados resumen
-    # --------------------------------------------------------
+    ws_resumen.row_dimensions[
+        1
+    ].height = 30
 
     for celda in ws_resumen[1]:
 
@@ -508,10 +776,6 @@ def formatear_excel():
             horizontal="center",
             vertical="center",
         )
-
-    # --------------------------------------------------------
-    # Datos resumen
-    # --------------------------------------------------------
 
     for fila in ws_resumen.iter_rows(
         min_row=2,
@@ -549,40 +813,20 @@ def formatear_excel():
 # ============================================================
 
 def calcular_motores():
-    """
-    Leer motores.xlsx, ejecutar cálculos, evaluar motores,
-    generar resumen y crear reporte Excel.
-    """
-
-    # ========================================================
-    # VALIDAR CONFIGURACIÓN
-    # ========================================================
 
     validar_parametros()
-
-    # ========================================================
-    # VERIFICAR ARCHIVO DE ENTRADA
-    # ========================================================
 
     if not ARCHIVO_ENTRADA.exists():
 
         raise FileNotFoundError(
-            "No se encontró el archivo:\n"
+            "No existe el archivo:\n"
             f"{ARCHIVO_ENTRADA}"
         )
-
-    # ========================================================
-    # CREAR CARPETA RESULTADOS
-    # ========================================================
 
     ARCHIVO_SALIDA.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
-
-    # ========================================================
-    # LEER EXCEL
-    # ========================================================
 
     df = pd.read_excel(
         ARCHIVO_ENTRADA
@@ -591,7 +835,7 @@ def calcular_motores():
     validar_datos(df)
 
     # ========================================================
-    # CÁLCULO DE POTENCIA
+    # POTENCIA
     # ========================================================
 
     df["KW"] = df["HP"].apply(
@@ -630,23 +874,139 @@ def calcular_motores():
     )
 
     # ========================================================
-    # INDICADOR DE CARGA POR CORRIENTE
+    # CORRIENTE PROMEDIO
+    # ========================================================
+
+    df[
+        "CORRIENTE_PROMEDIO_A"
+    ] = df.apply(
+        lambda fila: promedio_trifasico(
+            fila["CORRIENTE_L1_A"],
+            fila["CORRIENTE_L2_A"],
+            fila["CORRIENTE_L3_A"],
+        ),
+        axis=1,
+    )
+
+    # ========================================================
+    # DESBALANCE DE CORRIENTE
+    # ========================================================
+
+    df[
+        "DESBALANCE_CORRIENTE_PCT"
+    ] = df.apply(
+        lambda fila: desbalance_porcentual(
+            fila["CORRIENTE_L1_A"],
+            fila["CORRIENTE_L2_A"],
+            fila["CORRIENTE_L3_A"],
+        ),
+        axis=1,
+    )
+
+    # ========================================================
+    # FASE MAYOR Y MENOR
+    # ========================================================
+
+    df[
+        "FASE_MAYOR_CORRIENTE"
+    ] = df.apply(
+        lambda fila: fase_mayor(
+            fila["CORRIENTE_L1_A"],
+            fila["CORRIENTE_L2_A"],
+            fila["CORRIENTE_L3_A"],
+        ),
+        axis=1,
+    )
+
+    df[
+        "FASE_MENOR_CORRIENTE"
+    ] = df.apply(
+        lambda fila: fase_menor(
+            fila["CORRIENTE_L1_A"],
+            fila["CORRIENTE_L2_A"],
+            fila["CORRIENTE_L3_A"],
+        ),
+        axis=1,
+    )
+
+    # ========================================================
+    # VOLTAJE PROMEDIO
+    # ========================================================
+
+    df[
+        "VOLTAJE_PROMEDIO_V"
+    ] = df.apply(
+        lambda fila: promedio_trifasico(
+            fila["VOLTAJE_L1_L2_V"],
+            fila["VOLTAJE_L2_L3_V"],
+            fila["VOLTAJE_L3_L1_V"],
+        ),
+        axis=1,
+    )
+
+    # ========================================================
+    # DESBALANCE DE VOLTAJE
+    # ========================================================
+
+    df[
+        "DESBALANCE_VOLTAJE_PCT"
+    ] = df.apply(
+        lambda fila: desbalance_porcentual(
+            fila["VOLTAJE_L1_L2_V"],
+            fila["VOLTAJE_L2_L3_V"],
+            fila["VOLTAJE_L3_L1_V"],
+        ),
+        axis=1,
+    )
+
+    # ========================================================
+    # CARGA POR CORRIENTE
     # ========================================================
 
     df[
         "CARGA_CORRIENTE_PCT"
     ] = (
-        df["CORRIENTE_MEDIDA_A"]
+        df["CORRIENTE_PROMEDIO_A"]
         / df["CORRIENTE_PLACA_A"]
         * 100
     )
 
     # ========================================================
-    # EVALUACIÓN
+    # ALERTAS
     # ========================================================
 
-    df["ALERTA"] = df.apply(
-        evaluar_motor,
+    df[
+        "ALERTA_CARGA"
+    ] = df[
+        "CARGA_CORRIENTE_PCT"
+    ].apply(
+        evaluar_carga
+    )
+
+    df[
+        "ALERTA_DESBALANCE_CORRIENTE"
+    ] = df[
+        "DESBALANCE_CORRIENTE_PCT"
+    ].apply(
+        evaluar_desbalance_corriente
+    )
+
+    df[
+        "ALERTA_DESBALANCE_VOLTAJE"
+    ] = df[
+        "DESBALANCE_VOLTAJE_PCT"
+    ].apply(
+        evaluar_desbalance_voltaje
+    )
+
+    # ========================================================
+    # DIAGNÓSTICO GENERAL
+    # ========================================================
+
+    df[
+        "DIAGNOSTICO_GENERAL"
+    ] = df.apply(
+        generar_diagnostico,
         axis=1,
     )
 
@@ -654,37 +1014,23 @@ def calcular_motores():
     # REDONDEO
     # ========================================================
 
-    df["KW"] = (
-        df["KW"]
-        .round(2)
-    )
+    columnas_redondear = [
+        "KW",
+        "CORRIENTE_CALCULADA_A",
+        "DESVIACION_CALC_PLACA_PCT",
+        "CORRIENTE_PROMEDIO_A",
+        "DESBALANCE_CORRIENTE_PCT",
+        "VOLTAJE_PROMEDIO_V",
+        "DESBALANCE_VOLTAJE_PCT",
+        "CARGA_CORRIENTE_PCT",
+    ]
 
-    df[
-        "CORRIENTE_CALCULADA_A"
-    ] = (
-        df[
-            "CORRIENTE_CALCULADA_A"
-        ]
-        .round(2)
-    )
+    for columna in columnas_redondear:
 
-    df[
-        "DESVIACION_CALC_PLACA_PCT"
-    ] = (
-        df[
-            "DESVIACION_CALC_PLACA_PCT"
-        ]
-        .round(2)
-    )
-
-    df[
-        "CARGA_CORRIENTE_PCT"
-    ] = (
-        df[
-            "CARGA_CORRIENTE_PCT"
-        ]
-        .round(2)
-    )
+        df[columna] = (
+            df[columna]
+            .round(2)
+        )
 
     # ========================================================
     # RESUMEN
@@ -696,15 +1042,20 @@ def calcular_motores():
                 "Total de motores",
                 "Potencia instalada HP",
                 "Potencia instalada kW",
-                "Motores normales",
+                "Motores diagnóstico normal",
                 "Motores con carga alta",
                 "Motores con carga baja",
                 "Motores con posible sobrecarga",
-                "Corriente calculada total A",
-                "Corriente medida total A",
+                "Motores con desbalance de corriente",
+                "Motores con desbalance de voltaje",
+                "Mayor desbalance de corriente %",
+                "Mayor desbalance de voltaje %",
+                "Carga promedio por corriente %",
                 "Límite carga baja %",
                 "Límite carga alta %",
                 "Límite sobrecarga %",
+                "Límite desbalance corriente %",
+                "Límite desbalance voltaje %",
             ],
 
             "VALOR": [
@@ -721,36 +1072,57 @@ def calcular_motores():
                 ),
 
                 (
-                    df["ALERTA"]
+                    df["DIAGNOSTICO_GENERAL"]
                     == "NORMAL"
                 ).sum(),
 
                 (
-                    df["ALERTA"]
+                    df["ALERTA_CARGA"]
                     == "CARGA ALTA"
                 ).sum(),
 
                 (
-                    df["ALERTA"]
+                    df["ALERTA_CARGA"]
                     == "CARGA BAJA"
                 ).sum(),
 
                 (
-                    df["ALERTA"]
+                    df["ALERTA_CARGA"]
                     == "REVISAR SOBRECARGA"
+                ).sum(),
+
+                (
+                    df[
+                        "ALERTA_DESBALANCE_CORRIENTE"
+                    ]
+                    != "NORMAL"
+                ).sum(),
+
+                (
+                    df[
+                        "ALERTA_DESBALANCE_VOLTAJE"
+                    ]
+                    != "NORMAL"
                 ).sum(),
 
                 round(
                     df[
-                        "CORRIENTE_CALCULADA_A"
-                    ].sum(),
+                        "DESBALANCE_CORRIENTE_PCT"
+                    ].max(),
                     2,
                 ),
 
                 round(
                     df[
-                        "CORRIENTE_MEDIDA_A"
-                    ].sum(),
+                        "DESBALANCE_VOLTAJE_PCT"
+                    ].max(),
+                    2,
+                ),
+
+                round(
+                    df[
+                        "CARGA_CORRIENTE_PCT"
+                    ].mean(),
                     2,
                 ),
 
@@ -764,6 +1136,14 @@ def calcular_motores():
 
                 PARAMETROS[
                     "sobrecarga_pct"
+                ],
+
+                PARAMETROS[
+                    "desbalance_corriente_alerta_pct"
+                ],
+
+                PARAMETROS[
+                    "desbalance_voltaje_alerta_pct"
                 ],
             ],
         }
@@ -792,44 +1172,39 @@ def calcular_motores():
                 index=False,
             )
 
+        formatear_excel()
+
     except PermissionError:
 
         raise PermissionError(
             "\nNo se puede escribir el archivo:\n"
             f"{ARCHIVO_SALIDA}\n\n"
-            "Cierra motores_calculados.xlsx en Excel "
-            "y vuelve a ejecutar el programa."
+            "Cierra motores_calculados.xlsx "
+            "en Excel y vuelve a ejecutar."
         )
 
     # ========================================================
-    # FORMATO
-    # ========================================================
-
-    formatear_excel()
-
-    # ========================================================
-    # MOSTRAR RESULTADOS
+    # TERMINAL
     # ========================================================
 
     print()
 
     print(
-        "ANÁLISIS DE MOTORES"
+        "ANÁLISIS TRIFÁSICO DE MOTORES"
     )
 
     print(
-        "=" * 100
+        "=" * 110
     )
 
     columnas_mostrar = [
         "TAG",
         "DESCRIPCION",
-        "HP",
-        "CORRIENTE_CALCULADA_A",
-        "CORRIENTE_PLACA_A",
-        "CORRIENTE_MEDIDA_A",
+        "CORRIENTE_PROMEDIO_A",
         "CARGA_CORRIENTE_PCT",
-        "ALERTA",
+        "DESBALANCE_CORRIENTE_PCT",
+        "DESBALANCE_VOLTAJE_PCT",
+        "DIAGNOSTICO_GENERAL",
     ]
 
     print(
@@ -838,31 +1213,6 @@ def calcular_motores():
         ].to_string(
             index=False
         )
-    )
-
-    print()
-
-    print(
-        "PARÁMETROS DE ANÁLISIS"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        f"Carga baja: "
-        f"{PARAMETROS['carga_baja_pct']} %"
-    )
-
-    print(
-        f"Carga alta: "
-        f"{PARAMETROS['carga_alta_pct']} %"
-    )
-
-    print(
-        f"Sobrecarga: "
-        f"{PARAMETROS['sobrecarga_pct']} %"
     )
 
     print()

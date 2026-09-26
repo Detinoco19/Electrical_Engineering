@@ -3,6 +3,6 @@ carga_baja_pct: 30
 carga_alta_pct: 90
 sobrecarga_pct: 100
 
-# Criterios internos iniciales de desbalance
+# Criterios internos de desbalance
 desbalance_corriente_alerta_pct: 5
 desbalance_voltaje_alerta_pct: 1
