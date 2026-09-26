@@ -19,9 +19,6 @@ __pycache__/
 # Archivos temporales
 *.tmp
 *.bak
-# Pytest
-.pytest_cache/
 
-~$*.xlsx
 # Pytest
 .pytest_cache/
