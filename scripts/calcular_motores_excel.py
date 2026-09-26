@@ -16,9 +16,11 @@ from scripts.motores import (
     corriente_motor_trifasico,
 )
 
+from scripts.configuracion import cargar_parametros
+
 
 # ============================================================
-# CONFIGURACIÓN DE RUTAS
+# RUTAS DEL PROYECTO
 # ============================================================
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -37,41 +39,107 @@ ARCHIVO_SALIDA = (
 
 
 # ============================================================
+# CARGAR CONFIGURACIÓN
+# ============================================================
+
+PARAMETROS = cargar_parametros()
+
+
+def validar_parametros():
+    """
+    Verificar que el archivo YAML contenga los parámetros
+    requeridos para evaluar los motores.
+    """
+
+    requeridos = {
+        "carga_baja_pct",
+        "carga_alta_pct",
+        "sobrecarga_pct",
+    }
+
+    faltantes = (
+        requeridos
+        - set(PARAMETROS.keys())
+    )
+
+    if faltantes:
+        raise ValueError(
+            "Faltan parámetros en parametros_motores.yaml: "
+            f"{sorted(faltantes)}"
+        )
+
+    carga_baja = PARAMETROS["carga_baja_pct"]
+    carga_alta = PARAMETROS["carga_alta_pct"]
+    sobrecarga = PARAMETROS["sobrecarga_pct"]
+
+    if carga_baja < 0:
+        raise ValueError(
+            "carga_baja_pct no puede ser negativa."
+        )
+
+    if carga_alta <= carga_baja:
+        raise ValueError(
+            "carga_alta_pct debe ser mayor "
+            "que carga_baja_pct."
+        )
+
+    if sobrecarga <= carga_alta:
+        raise ValueError(
+            "sobrecarga_pct debe ser mayor "
+            "que carga_alta_pct."
+        )
+
+
+# ============================================================
 # EVALUACIÓN DEL MOTOR
 # ============================================================
 
 def evaluar_motor(fila):
     """
-    Evaluar el motor utilizando la relación entre corriente
-    medida y corriente nominal de placa.
+    Evaluar el motor usando la corriente medida respecto
+    a la corriente nominal de placa.
 
-    NOTA:
-    CARGA_CORRIENTE_PCT es un indicador basado en corriente.
-    No representa directamente la carga mecánica real del motor.
+    Los límites se leen desde:
+    configuracion/parametros_motores.yaml
+
+    CARGA_CORRIENTE_PCT es un indicador eléctrico basado
+    en corriente y no representa directamente la carga
+    mecánica real del motor.
     """
 
     carga = fila["CARGA_CORRIENTE_PCT"]
 
-    if carga > 100:
+    carga_baja = PARAMETROS[
+        "carga_baja_pct"
+    ]
+
+    carga_alta = PARAMETROS[
+        "carga_alta_pct"
+    ]
+
+    sobrecarga = PARAMETROS[
+        "sobrecarga_pct"
+    ]
+
+    if carga > sobrecarga:
         return "REVISAR SOBRECARGA"
 
-    if carga > 90:
+    if carga > carga_alta:
         return "CARGA ALTA"
 
-    if carga < 30:
+    if carga < carga_baja:
         return "CARGA BAJA"
 
     return "NORMAL"
 
 
 # ============================================================
-# VALIDACIÓN DE DATOS
+# VALIDACIÓN DE DATOS DE ENTRADA
 # ============================================================
 
 def validar_datos(df):
     """
-    Verificar estructura y valores básicos del archivo
-    datos/motores.xlsx.
+    Verificar estructura y valores básicos de motores.xlsx.
     """
 
     columnas_requeridas = {
@@ -86,20 +154,16 @@ def validar_datos(df):
         "ESTADO",
     }
 
-    columnas_faltantes = (
+    faltantes = (
         columnas_requeridas
         - set(df.columns)
     )
 
-    if columnas_faltantes:
+    if faltantes:
         raise ValueError(
             "Faltan columnas en motores.xlsx: "
-            f"{sorted(columnas_faltantes)}"
+            f"{sorted(faltantes)}"
         )
-
-    # --------------------------------------------------------
-    # Columnas numéricas obligatorias
-    # --------------------------------------------------------
 
     columnas_numericas = [
         "HP",
@@ -111,7 +175,7 @@ def validar_datos(df):
     ]
 
     # --------------------------------------------------------
-    # Verificar valores vacíos
+    # Valores vacíos
     # --------------------------------------------------------
 
     for columna in columnas_numericas:
@@ -122,7 +186,7 @@ def validar_datos(df):
             )
 
     # --------------------------------------------------------
-    # Verificar datos numéricos
+    # Verificar tipo numérico
     # --------------------------------------------------------
 
     for columna in columnas_numericas:
@@ -135,7 +199,7 @@ def validar_datos(df):
             )
 
     # --------------------------------------------------------
-    # Verificaciones técnicas básicas
+    # Validaciones técnicas
     # --------------------------------------------------------
 
     if (df["HP"] <= 0).any():
@@ -180,21 +244,21 @@ def validar_datos(df):
 
 
 # ============================================================
-# FORMATO DEL ARCHIVO EXCEL
+# FORMATO DEL REPORTE EXCEL
 # ============================================================
 
 def formatear_excel():
     """
-    Aplicar formato profesional al archivo Excel generado.
+    Aplicar formato al archivo motores_calculados.xlsx.
     """
 
     wb = load_workbook(
         ARCHIVO_SALIDA
     )
 
-    # ========================================================
-    # ESTILOS GENERALES
-    # ========================================================
+    # --------------------------------------------------------
+    # Estilos
+    # --------------------------------------------------------
 
     relleno_encabezado = PatternFill(
         fill_type="solid",
@@ -217,10 +281,6 @@ def formatear_excel():
         top=lado_borde,
         bottom=lado_borde,
     )
-
-    # --------------------------------------------------------
-    # Colores de diagnóstico
-    # --------------------------------------------------------
 
     relleno_normal = PatternFill(
         fill_type="solid",
@@ -248,17 +308,13 @@ def formatear_excel():
 
     ws = wb["MOTORES"]
 
-    # Congelar fila superior
     ws.freeze_panes = "A2"
-
-    # Activar filtro
     ws.auto_filter.ref = ws.dimensions
 
-    # Altura de encabezado
     ws.row_dimensions[1].height = 45
 
     # --------------------------------------------------------
-    # Formatear encabezado
+    # Encabezados
     # --------------------------------------------------------
 
     for celda in ws[1]:
@@ -274,7 +330,7 @@ def formatear_excel():
         )
 
     # --------------------------------------------------------
-    # Formato general de datos
+    # Celdas
     # --------------------------------------------------------
 
     for fila in ws.iter_rows(
@@ -291,24 +347,24 @@ def formatear_excel():
             )
 
     # --------------------------------------------------------
-    # Anchos de columnas
+    # Ancho de columnas
     # --------------------------------------------------------
 
     anchos = {
-        "A": 12,   # TAG
-        "B": 28,   # DESCRIPCION
-        "C": 10,   # HP
-        "D": 12,   # VOLTAJE
-        "E": 10,   # FP
-        "F": 14,   # EFICIENCIA
-        "G": 20,   # CORRIENTE_PLACA_A
-        "H": 20,   # CORRIENTE_MEDIDA_A
-        "I": 15,   # ESTADO
-        "J": 12,   # KW
-        "K": 22,   # CORRIENTE_CALCULADA_A
-        "L": 26,   # DESVIACION_CALC_PLACA_PCT
-        "M": 22,   # CARGA_CORRIENTE_PCT
-        "N": 24,   # ALERTA
+        "A": 12,
+        "B": 28,
+        "C": 10,
+        "D": 12,
+        "E": 10,
+        "F": 14,
+        "G": 20,
+        "H": 20,
+        "I": 15,
+        "J": 12,
+        "K": 22,
+        "L": 26,
+        "M": 22,
+        "N": 24,
     }
 
     for columna, ancho in anchos.items():
@@ -318,7 +374,7 @@ def formatear_excel():
         ].width = ancho
 
     # --------------------------------------------------------
-    # Formatos numéricos
+    # Formato numérico
     # --------------------------------------------------------
 
     for fila in range(
@@ -326,38 +382,19 @@ def formatear_excel():
         ws.max_row + 1,
     ):
 
-        # HP
         ws[f"C{fila}"].number_format = "0.00"
-
-        # Voltaje
         ws[f"D{fila}"].number_format = "0.00"
-
-        # FP
         ws[f"E{fila}"].number_format = "0.00"
-
-        # Eficiencia
         ws[f"F{fila}"].number_format = "0.00"
-
-        # Corriente de placa
         ws[f"G{fila}"].number_format = "0.00"
-
-        # Corriente medida
         ws[f"H{fila}"].number_format = "0.00"
-
-        # kW
         ws[f"J{fila}"].number_format = "0.00"
-
-        # Corriente calculada
         ws[f"K{fila}"].number_format = "0.00"
-
-        # Desviación %
         ws[f"L{fila}"].number_format = "0.00"
-
-        # Carga por corriente %
         ws[f"M{fila}"].number_format = "0.00"
 
     # --------------------------------------------------------
-    # Centrar columnas numéricas
+    # Centrado
     # --------------------------------------------------------
 
     columnas_centradas = [
@@ -391,7 +428,7 @@ def formatear_excel():
             )
 
     # --------------------------------------------------------
-    # Colorear alertas
+    # Colores según alerta
     # --------------------------------------------------------
 
     for fila in range(
@@ -449,10 +486,6 @@ def formatear_excel():
         1
     ].height = 30
 
-    # --------------------------------------------------------
-    # Anchos de columna
-    # --------------------------------------------------------
-
     ws_resumen.column_dimensions[
         "A"
     ].width = 40
@@ -462,7 +495,7 @@ def formatear_excel():
     ].width = 20
 
     # --------------------------------------------------------
-    # Encabezados
+    # Encabezados resumen
     # --------------------------------------------------------
 
     for celda in ws_resumen[1]:
@@ -477,7 +510,7 @@ def formatear_excel():
         )
 
     # --------------------------------------------------------
-    # Formato de datos
+    # Datos resumen
     # --------------------------------------------------------
 
     for fila in ws_resumen.iter_rows(
@@ -493,7 +526,6 @@ def formatear_excel():
                 vertical="center",
             )
 
-    # Valores del resumen
     for fila in range(
         2,
         ws_resumen.max_row + 1,
@@ -504,7 +536,7 @@ def formatear_excel():
         ].number_format = "0.00"
 
     # ========================================================
-    # GUARDAR ARCHIVO
+    # GUARDAR
     # ========================================================
 
     wb.save(
@@ -518,9 +550,15 @@ def formatear_excel():
 
 def calcular_motores():
     """
-    Leer datos/motores.xlsx, realizar cálculos eléctricos,
-    generar diagnóstico, resumen y reporte Excel.
+    Leer motores.xlsx, ejecutar cálculos, evaluar motores,
+    generar resumen y crear reporte Excel.
     """
+
+    # ========================================================
+    # VALIDAR CONFIGURACIÓN
+    # ========================================================
+
+    validar_parametros()
 
     # ========================================================
     # VERIFICAR ARCHIVO DE ENTRADA
@@ -534,7 +572,7 @@ def calcular_motores():
         )
 
     # ========================================================
-    # CREAR CARPETA DE RESULTADOS
+    # CREAR CARPETA RESULTADOS
     # ========================================================
 
     ARCHIVO_SALIDA.parent.mkdir(
@@ -543,34 +581,26 @@ def calcular_motores():
     )
 
     # ========================================================
-    # LEER DATOS
+    # LEER EXCEL
     # ========================================================
 
     df = pd.read_excel(
         ARCHIVO_ENTRADA
     )
 
-    # ========================================================
-    # VALIDAR DATOS
-    # ========================================================
-
     validar_datos(df)
 
     # ========================================================
-    # CÁLCULOS
+    # CÁLCULO DE POTENCIA
     # ========================================================
-
-    # --------------------------------------------------------
-    # Potencia HP → kW
-    # --------------------------------------------------------
 
     df["KW"] = df["HP"].apply(
         hp_a_kw
     )
 
-    # --------------------------------------------------------
-    # Corriente calculada
-    # --------------------------------------------------------
+    # ========================================================
+    # CORRIENTE CALCULADA
+    # ========================================================
 
     df[
         "CORRIENTE_CALCULADA_A"
@@ -584,9 +614,9 @@ def calcular_motores():
         axis=1,
     )
 
-    # --------------------------------------------------------
-    # Diferencia cálculo vs placa
-    # --------------------------------------------------------
+    # ========================================================
+    # DESVIACIÓN CALCULADA VS PLACA
+    # ========================================================
 
     df[
         "DESVIACION_CALC_PLACA_PCT"
@@ -599,9 +629,9 @@ def calcular_motores():
         * 100
     )
 
-    # --------------------------------------------------------
-    # Indicador de carga basado en corriente
-    # --------------------------------------------------------
+    # ========================================================
+    # INDICADOR DE CARGA POR CORRIENTE
+    # ========================================================
 
     df[
         "CARGA_CORRIENTE_PCT"
@@ -611,9 +641,9 @@ def calcular_motores():
         * 100
     )
 
-    # --------------------------------------------------------
-    # Diagnóstico
-    # --------------------------------------------------------
+    # ========================================================
+    # EVALUACIÓN
+    # ========================================================
 
     df["ALERTA"] = df.apply(
         evaluar_motor,
@@ -621,7 +651,7 @@ def calcular_motores():
     )
 
     # ========================================================
-    # REDONDEAR RESULTADOS
+    # REDONDEO
     # ========================================================
 
     df["KW"] = (
@@ -657,7 +687,7 @@ def calcular_motores():
     )
 
     # ========================================================
-    # GENERAR RESUMEN
+    # RESUMEN
     # ========================================================
 
     resumen = pd.DataFrame(
@@ -672,6 +702,9 @@ def calcular_motores():
                 "Motores con posible sobrecarga",
                 "Corriente calculada total A",
                 "Corriente medida total A",
+                "Límite carga baja %",
+                "Límite carga alta %",
+                "Límite sobrecarga %",
             ],
 
             "VALOR": [
@@ -720,12 +753,24 @@ def calcular_motores():
                     ].sum(),
                     2,
                 ),
+
+                PARAMETROS[
+                    "carga_baja_pct"
+                ],
+
+                PARAMETROS[
+                    "carga_alta_pct"
+                ],
+
+                PARAMETROS[
+                    "sobrecarga_pct"
+                ],
             ],
         }
     )
 
     # ========================================================
-    # EXPORTAR A EXCEL
+    # EXPORTAR
     # ========================================================
 
     try:
@@ -757,13 +802,13 @@ def calcular_motores():
         )
 
     # ========================================================
-    # APLICAR FORMATO PROFESIONAL
+    # FORMATO
     # ========================================================
 
     formatear_excel()
 
     # ========================================================
-    # MOSTRAR RESULTADOS EN TERMINAL
+    # MOSTRAR RESULTADOS
     # ========================================================
 
     print()
@@ -793,6 +838,31 @@ def calcular_motores():
         ].to_string(
             index=False
         )
+    )
+
+    print()
+
+    print(
+        "PARÁMETROS DE ANÁLISIS"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        f"Carga baja: "
+        f"{PARAMETROS['carga_baja_pct']} %"
+    )
+
+    print(
+        f"Carga alta: "
+        f"{PARAMETROS['carga_alta_pct']} %"
+    )
+
+    print(
+        f"Sobrecarga: "
+        f"{PARAMETROS['sobrecarga_pct']} %"
     )
 
     print()
