@@ -1,9 +1,0 @@
-# Criterios internos de análisis de motores
-# Valores expresados como porcentaje de corriente de placa
-
-carga_baja_pct: 30
-carga_alta_pct: 90
-sobrecarga_pct: 100
-
-# Conversión de potencia
-hp_a_kw: 0.746
