@@ -17,7 +17,7 @@ from scripts.reporte_motores import (
 
 
 # ============================================================
-# RUTAS DEL PROYECTO
+# RUTAS
 # ============================================================
 
 RAIZ = (
@@ -41,7 +41,7 @@ ARCHIVO_SALIDA = (
 
 
 # ============================================================
-# EJECUCIÓN DEL MÓDULO DE MOTORES
+# EJECUCIÓN
 # ============================================================
 
 def main():
@@ -49,41 +49,47 @@ def main():
     Ejecutar análisis completo de motores.
     """
 
-    # --------------------------------------------------------
-    # Verificar archivo de entrada
-    # --------------------------------------------------------
-
     if not ARCHIVO_ENTRADA.exists():
+
         raise FileNotFoundError(
-            "No existe el archivo de entrada:\n"
+            "No existe el archivo:\n"
             f"{ARCHIVO_ENTRADA}"
         )
 
     # --------------------------------------------------------
-    # Cargar parámetros
+    # Parámetros
     # --------------------------------------------------------
 
-    parametros = cargar_parametros()
-
-    # --------------------------------------------------------
-    # Leer Excel
-    # --------------------------------------------------------
-
-    datos = pd.read_excel(
-        ARCHIVO_ENTRADA
+    parametros = (
+        cargar_parametros()
     )
 
     # --------------------------------------------------------
-    # Procesar motores
+    # Leer hojas
+    # --------------------------------------------------------
+
+    motores = pd.read_excel(
+        ARCHIVO_ENTRADA,
+        sheet_name="MOTORES",
+    )
+
+    mediciones = pd.read_excel(
+        ARCHIVO_ENTRADA,
+        sheet_name="MEDICIONES",
+    )
+
+    # --------------------------------------------------------
+    # Procesar
     # --------------------------------------------------------
 
     resultados = procesar_motores(
-        datos,
+        motores,
+        mediciones,
         parametros,
     )
 
     # --------------------------------------------------------
-    # Generar resumen
+    # Resumen
     # --------------------------------------------------------
 
     resumen = generar_resumen(
@@ -92,7 +98,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Exportar reporte
+    # Exportar
     # --------------------------------------------------------
 
     exportar_reporte(
@@ -102,17 +108,18 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Mostrar resultado en terminal
+    # Mostrar resultados
     # --------------------------------------------------------
 
     print()
-    print("=" * 70)
+    print("=" * 80)
     print("ANÁLISIS DE MOTORES TERMINADO")
-    print("=" * 70)
+    print("=" * 80)
 
     columnas = [
         "TAG",
         "DESCRIPCION",
+        "FECHA",
         "CORRIENTE_PROMEDIO_A",
         "CARGA_CORRIENTE_PCT",
         "DESBALANCE_CORRIENTE_PCT",
@@ -121,6 +128,7 @@ def main():
     ]
 
     print()
+
     print(
         resultados[
             columnas

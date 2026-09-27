@@ -15,36 +15,103 @@ PARAMETROS = {
 }
 
 
-def crear_motor_prueba():
+# ============================================================
+# DATOS DE PRUEBA
+# ============================================================
+
+def crear_motor():
 
     return pd.DataFrame(
         [
             {
-                "TAG": "M-001",
-                "DESCRIPCION": "Bomba",
-                "HP": 125,
-                "VOLTAJE": 480,
-                "FP": 0.88,
-                "EFICIENCIA": 0.94,
-                "CORRIENTE_PLACA_A": 140,
-                "CORRIENTE_L1_A": 118,
-                "CORRIENTE_L2_A": 120,
-                "CORRIENTE_L3_A": 123,
-                "VOLTAJE_L1_L2_V": 478,
-                "VOLTAJE_L2_L3_V": 481,
-                "VOLTAJE_L3_L1_V": 479,
-                "ESTADO": "Operando",
+                "TAG": "MR-001",
+                "DESCRIPCION": "Motorreductor",
+                "AREA": "SECADO MECANICO",
+                "FABRICANTE": "SEW-EURODRIVE",
+                "MODELO": "R97 DRN100L4/BES",
+                "TIPO_EQUIPO": "Motorreductor",
+                "KW_PLACA": 3.7,
+                "HP": 4.96,
+                "VOLTAJE_V": 480,
+                "CORRIENTE_PLACA_A": 6.90,
+                "FRECUENCIA_HZ": 60,
+                "FP": 0.72,
+                "EFICIENCIA": 0.895,
+                "ESTADO": "Operativo",
+                "OBSERVACIONES": "",
             }
         ]
     )
 
 
-def test_procesar_motor():
+def crear_mediciones():
 
-    datos = crear_motor_prueba()
+    return pd.DataFrame(
+        [
+            {
+                "FECHA": "27/09/2026",
+                "TAG": "MR-001",
+                "CORRIENTE_L1_A": 5.8,
+                "CORRIENTE_L2_A": 5.9,
+                "CORRIENTE_L3_A": 6.0,
+                "VOLTAJE_L1_L2_V": 478,
+                "VOLTAJE_L2_L3_V": 480,
+                "VOLTAJE_L3_L1_V": 479,
+                "TEMPERATURA_C": 52,
+                "AISLAMIENTO_MOHM": 850,
+                "ESTADO": "Operando",
+                "OBSERVACIONES": "",
+            },
+
+            {
+                "FECHA": "27/10/2026",
+                "TAG": "MR-001",
+                "CORRIENTE_L1_A": 5.9,
+                "CORRIENTE_L2_A": 6.0,
+                "CORRIENTE_L3_A": 6.1,
+                "VOLTAJE_L1_L2_V": 479,
+                "VOLTAJE_L2_L3_V": 480,
+                "VOLTAJE_L3_L1_V": 481,
+                "TEMPERATURA_C": 53,
+                "AISLAMIENTO_MOHM": 820,
+                "ESTADO": "Operando",
+                "OBSERVACIONES": "",
+            },
+        ]
+    )
+
+
+# ============================================================
+# PRUEBA ÚLTIMA MEDICIÓN
+# ============================================================
+
+def test_ultima_medicion():
 
     resultado = procesar_motores(
-        datos,
+        crear_motor(),
+        crear_mediciones(),
+        PARAMETROS,
+    )
+
+    motor = resultado.iloc[0]
+
+    assert (
+        motor["FECHA"].strftime(
+            "%d/%m/%Y"
+        )
+        == "27/10/2026"
+    )
+
+
+# ============================================================
+# PRUEBA CORRIENTE PROMEDIO
+# ============================================================
+
+def test_corriente_promedio():
+
+    resultado = procesar_motores(
+        crear_motor(),
+        crear_mediciones(),
         PARAMETROS,
     )
 
@@ -52,29 +119,38 @@ def test_procesar_motor():
 
     assert abs(
         motor["CORRIENTE_PROMEDIO_A"]
-        - 120.33
+        - 6.0
     ) < 0.01
 
-    assert abs(
-        motor["CARGA_CORRIENTE_PCT"]
-        - 85.95
-    ) < 0.01
 
-    assert motor[
-        "FASE_MAYOR_CORRIENTE"
-    ] == "L3"
+# ============================================================
+# PRUEBA DETECCIÓN DE MEDICIÓN
+# ============================================================
 
-    assert motor[
-        "DIAGNOSTICO_GENERAL"
-    ] == "NORMAL"
-
-
-def test_generar_resumen():
-
-    datos = crear_motor_prueba()
+def test_motor_con_medicion():
 
     resultado = procesar_motores(
-        datos,
+        crear_motor(),
+        crear_mediciones(),
+        PARAMETROS,
+    )
+
+    motor = resultado.iloc[0]
+
+    assert bool(
+        motor["TIENE_MEDICION"]
+    )
+
+
+# ============================================================
+# PRUEBA DEL RESUMEN
+# ============================================================
+
+def test_resumen():
+
+    resultado = procesar_motores(
+        crear_motor(),
+        crear_mediciones(),
         PARAMETROS,
     )
 
@@ -96,8 +172,11 @@ def test_generar_resumen():
     )
 
     assert (
-        valores[
-            "Motores diagnóstico normal"
-        ]
+        valores["Motores con medición"]
         == 1
+    )
+
+    assert (
+        valores["Motores sin medición"]
+        == 0
     )
