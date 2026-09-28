@@ -1,120 +1,53 @@
-from pathlib import Path
 
+from pathlib import Path
 import pandas as pd
 
-from scripts.configuracion import (
-    cargar_parametros,
-)
-
+from scripts.configuracion import cargar_parametros
 from scripts.analisis_motores import (
     procesar_motores,
+    procesar_historial,
     generar_resumen,
+    generar_control_calidad,
 )
+from scripts.reporte_motores import exportar_reporte
 
-from scripts.reporte_motores import (
-    exportar_reporte,
-)
+RAIZ = Path(__file__).resolve().parent.parent
+ARCHIVO_ENTRADA = RAIZ / "datos" / "motores.xlsx"
+ARCHIVO_SALIDA = RAIZ / "resultados" / "motores_calculados.xlsx"
 
-
-# ============================================================
-# RUTAS
-# ============================================================
-
-RAIZ = (
-    Path(__file__)
-    .resolve()
-    .parent
-    .parent
-)
-
-ARCHIVO_ENTRADA = (
-    RAIZ
-    / "datos"
-    / "motores.xlsx"
-)
-
-ARCHIVO_SALIDA = (
-    RAIZ
-    / "resultados"
-    / "motores_calculados.xlsx"
-)
-
-
-# ============================================================
-# EJECUCIÓN
-# ============================================================
 
 def main():
-    """
-    Ejecutar análisis completo de motores.
-    """
-
     if not ARCHIVO_ENTRADA.exists():
-
         raise FileNotFoundError(
-            "No existe el archivo:\n"
-            f"{ARCHIVO_ENTRADA}"
+            f"No existe el archivo de entrada:\n{ARCHIVO_ENTRADA}"
         )
 
-    # --------------------------------------------------------
-    # Parámetros
-    # --------------------------------------------------------
+    parametros = cargar_parametros()
 
-    parametros = (
-        cargar_parametros()
-    )
+    libro = pd.ExcelFile(ARCHIVO_ENTRADA)
+    hojas_requeridas = {"MOTORES", "MEDICIONES"}
+    faltantes = hojas_requeridas - set(libro.sheet_names)
 
-    # --------------------------------------------------------
-    # Leer hojas
-    # --------------------------------------------------------
+    if faltantes:
+        raise ValueError(
+            f"Faltan hojas en motores.xlsx: {sorted(faltantes)}"
+        )
 
-    motores = pd.read_excel(
-        ARCHIVO_ENTRADA,
-        sheet_name="MOTORES",
-    )
+    motores = pd.read_excel(libro, sheet_name="MOTORES")
+    mediciones = pd.read_excel(libro, sheet_name="MEDICIONES")
 
-    mediciones = pd.read_excel(
-        ARCHIVO_ENTRADA,
-        sheet_name="MEDICIONES",
-    )
-
-    # --------------------------------------------------------
-    # Procesar
-    # --------------------------------------------------------
-
-    resultados = procesar_motores(
-        motores,
-        mediciones,
-        parametros,
-    )
-
-    # --------------------------------------------------------
-    # Resumen
-    # --------------------------------------------------------
-
-    resumen = generar_resumen(
-        resultados,
-        parametros,
-    )
-
-    # --------------------------------------------------------
-    # Exportar
-    # --------------------------------------------------------
+    resultados = procesar_motores(motores, mediciones, parametros)
+    historial = procesar_historial(motores, mediciones, parametros)
+    resumen = generar_resumen(resultados, parametros)
+    calidad = generar_control_calidad(motores, mediciones)
 
     exportar_reporte(
         resultados,
         resumen,
+        historial,
+        calidad,
         ARCHIVO_SALIDA,
     )
-
-    # --------------------------------------------------------
-    # Mostrar resultados
-    # --------------------------------------------------------
-
-    print()
-    print("=" * 80)
-    print("ANÁLISIS DE MOTORES TERMINADO")
-    print("=" * 80)
 
     columnas = [
         "TAG",
@@ -127,24 +60,31 @@ def main():
         "DIAGNOSTICO_GENERAL",
     ]
 
-    print()
-
-    print(
-        resultados[
-            columnas
-        ].to_string(
-            index=False
-        )
+    vista = resultados[columnas].copy()
+    vista["FECHA"] = (
+        pd.to_datetime(vista["FECHA"], errors="coerce")
+        .dt.strftime("%d/%m/%Y")
     )
+    vista = vista.fillna("")
 
+    advertencias = int((calidad["NIVEL"] == "ADVERTENCIA").sum())
+    informaciones = int((calidad["NIVEL"] == "INFORMACION").sum())
+
+    print()
+    print("=" * 95)
+    print("ANÁLISIS DE MOTORES TERMINADO")
+    print("=" * 95)
+    print()
+    print(vista.to_string(index=False))
+    print()
+    print(f"Motores procesados: {len(resultados)}")
+    print(f"Registros históricos procesados: {len(historial)}")
+    print(f"Advertencias de calidad: {advertencias}")
+    print(f"Informaciones de calidad: {informaciones}")
     print()
     print("Archivo generado:")
     print(ARCHIVO_SALIDA)
 
-
-# ============================================================
-# EJECUCIÓN DIRECTA
-# ============================================================
 
 if __name__ == "__main__":
     main()
